@@ -1,0 +1,74 @@
+
+import os
+import secrets
+import base64
+from urllib.parse import urlencode
+
+from aiohttp import web, ClientSession
+
+CLIENT_ID = os.environ["SPOTIFY_CLIENT_ID"]
+CLIENT_SECRET = os.environ["SPOTIFY_CLIENT_SECRET"]
+REDIRECT_URI = os.environ["REDIRECT_URI"]
+
+STATE = secrets.token_urlsafe(32)
+
+
+async def home(request):
+    params = {
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+        "scope": "user-read-currently-playing user-read-playback-state",
+        "state": STATE,
+    }
+    url = "https://accounts.spotify.com/authorize?" + urlencode(params)
+    raise web.HTTPFound(url)
+
+
+async def callback(request):
+    if request.query.get("state") != STATE:
+        return web.Response(text="Invalid state", status=400)
+
+    code = request.query.get("code")
+    if not code:
+        return web.Response(
+            text="Spotify authorization failed. Return to the service and try again.",
+            status=400,
+        )
+
+    credentials = base64.b64encode(
+        f"{CLIENT_ID}:{CLIENT_SECRET}".encode()
+    ).decode()
+
+    async with ClientSession() as session:
+        async with session.post(
+            "https://accounts.spotify.com/api/token",
+            headers={
+                "Authorization": f"Basic {credentials}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": REDIRECT_URI,
+            },
+        ) as response:
+            data = await response.json()
+
+    if "refresh_token" not in data:
+        return web.Response(
+            text="Token exchange failed. Check the service logs.",
+            status=400,
+        )
+
+    return web.Response(
+        text="Your Spotify refresh token (keep it secret):\n\n"
+        + data["refresh_token"]
+    )
+
+
+app = web.Application()
+app.router.add_get("/", home)
+app.router.add_get("/callback", callback)
+
+web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", "10000")))
